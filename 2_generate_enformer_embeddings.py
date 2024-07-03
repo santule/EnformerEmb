@@ -7,6 +7,7 @@ from tqdm import tqdm
 import pickle, math
 import h5py, os, glob
 from collections import defaultdict
+from enformer_pytorch import from_pretrained
 
 data_dir = 'data/'
 device = 'cuda'
@@ -76,13 +77,16 @@ class Gendataset(Dataset):
                 'genome_seq':genome_seq}
     
 # enformer model
-model = Enformer.from_hparams(
-    dim = 1536,
-    depth = 11,
-    heads = 8,
-    output_heads = dict(human = 5313, mouse = 1643),
-    target_length = 896,
-).to(device)
+# model = Enformer.from_hparams(
+#     dim = 1536,
+#     depth = 11,
+#     heads = 8,
+#     output_heads = dict(human = 5313, mouse = 1643),
+#     target_length = 896,
+# ).to(device)
+
+# load weights
+model = from_pretrained('EleutherAI/enformer-official-rough').to(device)
 
 # save edge regions for later processing
 def save_edge_regions(chr_info,tile_embeddings,chr_region_edges_idx):
@@ -264,6 +268,7 @@ def get_rem_region_embeddings(rem_regions, chrs, chr_region_edges_idx, h5_filena
         print(f"Processing edge region {tt} on chromosome {chrs}")
         tt_embeddings_lst,tt_chr_lst,tt_lst = [], [], []
         edge_region_found = 0
+        n_embeddings = 3
 
         for r_start_region in chr_region_edges_idx:
             if tt >= r_start_region and tt < r_start_region + enformer_window: # chrosome matches
@@ -277,15 +282,22 @@ def get_rem_region_embeddings(rem_regions, chrs, chr_region_edges_idx, h5_filena
                 tt_embedding = torch.load(f'{data_dir}{chrs}_{str(region_before)}_embeddings.pt')
                 tt_embeddings_lst.append(tt_embedding)
 
-                region_after = r_start_region + enformer_window
-                tt_embedding = torch.load(f'{data_dir}{chrs}_{str(region_after)}_embeddings.pt')
+                try: # edge case
 
-                tt_embeddings_lst.append(tt_embedding)
+                    region_after = r_start_region + enformer_window
+                    tt_embedding = torch.load(f'{data_dir}{chrs}_{str(region_after)}_embeddings.pt')
+
+                    tt_embeddings_lst.append(tt_embedding)
+                except:
+
+                    print(f"WARNING: for {chrs}:{tt}, there does not exist an embedding to the right of this location at end of chromosome")
+                    n_embeddings = 2
+
                 tt_chr_lst.append(int(chrs.replace('chr','').replace('M','23').replace('X','24').replace('Y','25')))
                 tt_lst.append(int(tt))
             
                 # check if we got all 3 region embeddings
-                assert len(tt_embeddings_lst) == 3, "Embeddings should be for 3 regions"
+                assert len(tt_embeddings_lst) == n_embeddings, "Embeddings should be for {n_embeddings} regions"
 
                 embeddings_np = np.array(torch.stack(tt_embeddings_lst,axis=0).squeeze(1).mean(axis=0)).reshape(1,-1)
                 region_chr_np = np.array(tt_chr_lst).reshape(-1,1)
@@ -293,6 +305,8 @@ def get_rem_region_embeddings(rem_regions, chrs, chr_region_edges_idx, h5_filena
                 save_hdf5(embeddings_np,region_chr_np,region_pos_np,h5_file)  
                 processed.append(tt)
                 print(f"Processed {tt}")
+                break
+
         if edge_region_found == 0:
             print(f'Edge regions {tt} on chromosome {chrs} not found in the embedding files')
             break
@@ -319,7 +333,7 @@ def convert_bed_to_dict(bed_file):
 
     for l in f:
         line = l.split('\t')
-        regions_dict[line[0]].append(int(line[1]) + 1) # + 1 as it is 0 indexed.
+        regions_dict[line[0]].append(int(line[1]) + 1) # + 1 as BED file is 0 indexed.
     
     return regions_dict
 
@@ -337,10 +351,9 @@ if __name__ == "__main__":
     print(f"Train and test bed file processed")
 
     # get embedddings for the whole genome one chromosome at a time
-    for chrs in ['chr21']:
-        # 'chrM','chr1', 'chr10', 'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18', 'chr19', 
-        #      'chr2', 'chr20', 'chr21', 'chr22', 
-        #      'chr3', 'chr4', 'chr5', 'chr6', 'chr7', 'chr8', 'chr9', 'chrX', 'chrY']:
+    for chrs in ['chr21','chrM','chr1', 'chr10', 'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18', 'chr19', 
+             'chr2', 'chr20', 'chr21', 'chr22', 
+             'chr3', 'chr4', 'chr5', 'chr6', 'chr7', 'chr8', 'chr9', 'chrX', 'chrY']:
         
         print(f"Processing chromosome {chrs}")
         train_regions_chr = train_regions[chrs]
